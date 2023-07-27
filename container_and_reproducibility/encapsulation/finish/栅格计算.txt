@@ -1,0 +1,101 @@
+package support;
+
+import cn.hutool.core.io.FileUtil;
+import cn.hutool.core.io.IoUtil;
+import cn.hutool.core.util.RuntimeUtil;
+import cn.hutool.core.util.ZipUtil;
+import support.model.ModelEvent;
+import support.model.Parameter;
+import support.process.DataProcessService;
+import support.process.ProcessBehavior;
+import support.utils.DataUtils;
+import support.utils.PathUtils;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * @ClassName DataProcessEncapsulation
+ * @Description ass we see
+ * @Author sun_liber
+ * @Date 2020/4/29
+ * @Version 1.0.0
+ */
+public class DataProcessEncapsulation implements Instance  {
+
+    public DataProcessService dataProcessService;
+
+    public DataProcessEncapsulation(DataProcessService dataProcessService) {
+        this.dataProcessService = dataProcessService;
+    }
+
+    @Override
+    public void run(String id) throws IOException {
+        ProcessBehavior behavior = dataProcessService.getBehavior();
+        Path workSpace= PathUtils.getWorkSpace(id);
+        Path sagePath=PathUtils.getPublicExe("saga");
+        File inputGridsDir=workSpace.resolve("inputGrids").toFile();
+        String formula = null;
+        Path outputPath=workSpace.resolve("raster_after_compute");
+
+
+
+
+        Boolean singleFile=true;
+        File rasterFile,indexFile = null;
+        for (ModelEvent input : behavior.getInputs()) {
+            String dataServiceId = input.getDataServiceId();
+            String name = input.getName();
+            if(name.equals("grids")){
+                rasterFile=workSpace.resolve(name).toFile();
+                DataUtils.download(dataServiceId,rasterFile);
+                ZipUtil.unzip(rasterFile,inputGridsDir);
+            }else{
+                //说明是多个文件
+                if(dataServiceId!=null){
+                    indexFile=workSpace.resolve(name).toFile();
+                    DataUtils.download(dataServiceId,indexFile);
+                    singleFile=false;
+                }
+            }
+        }
+
+        for (Parameter parameter : behavior.getParameters()) {
+            formula=parameter.getValue();
+        }
+
+        List<File> files = FileUtil.loopFiles(inputGridsDir, (pathname) -> pathname.getName().endsWith(".sgrd"));
+        StringBuilder stringBuilder = new StringBuilder();
+        if(singleFile==true){
+            stringBuilder.append(files.get(0).getAbsoluteFile());
+        }else{
+            List<String> indexFileString=new ArrayList();
+            IoUtil.readLines(FileUtil.getInputStream(indexFile),"utf-8",indexFileString);
+            indexFileString.forEach(fileName->{
+                stringBuilder.append(inputGridsDir.getAbsoluteFile()+File.separator+fileName);
+                stringBuilder.append(";");
+            });
+        }
+
+
+
+        outputPath.toFile().mkdir();
+
+        File result=outputPath.resolve("result.sgrd").toFile();
+        String cmd;
+        cmd=sagePath.toString()+" grid_calculus 1 -GRIDS "+stringBuilder.toString()
+                +" -RESULT "+result.getAbsolutePath()
+                +" -FORMULA "+"\""+formula+"\""
+        ;
+        Process process = RuntimeUtil.exec(null, sagePath.getParent().toFile(), new String[]{cmd});
+        RuntimeUtil.getResult(process);
+
+        for (ModelEvent output : behavior.getOutputs()) {
+            File zipResult=ZipUtil.zip(outputPath.toString());
+            output.setDataServiceId(DataUtils.upload(zipResult));
+        }
+    }
+}
